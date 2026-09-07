@@ -1,0 +1,64 @@
+export default async function handler(req, res) {
+  if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+  if (!process.env.GEMINI_API_KEY) return res.status(500).json({ error: 'GEMINI_API_KEY is not configured' });
+
+  try {
+    const { message, context = {} } = req.body || {};
+    if (!message || typeof message !== 'string') {
+      return res.status(400).json({ error: 'Message is required' });
+    }
+
+    const safeContext = JSON.stringify({
+      country: context.country || '',
+      studentStatus: context.status || '',
+      jobOffer: String(context.job || '').slice(0, 6000),
+      analysis: String(context.analysis || '').slice(0, 5000)
+    });
+
+    const systemInstruction = `You are CrossSafe AI, the safety assistant inside CrossSafe, an educational prototype for international students assessing suspicious job offers.
+
+Be concise, practical, calm, and explain your reasoning. Use the supplied CrossSafe analysis as context when present. Do not claim a job is definitely a scam based only on this tool. Do not provide legal advice; suggest checking official government or university sources for legal/visa questions. Never ask for passwords, OTPs, card numbers, or unnecessary personal data. If the user asks something unrelated to job safety, answer briefly and redirect when appropriate. Prefer bullets for risk explanations.
+
+CURRENT CROSSSAFE CONTEXT:
+${safeContext}`;
+
+    const model = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(process.env.GEMINI_API_KEY)}`;
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        systemInstruction: {
+          parts: [{ text: systemInstruction }]
+        },
+        contents: [{
+          role: 'user',
+          parts: [{ text: message }]
+        }],
+        generationConfig: {
+          temperature: 0.2,
+          maxOutputTokens: 700
+        }
+      })
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      const detail = data?.error?.message || 'Gemini request failed';
+      return res.status(response.status).json({ error: detail });
+    }
+
+    const reply = data?.candidates?.[0]?.content?.parts
+      ?.map(part => part?.text || '')
+      .join('')
+      .trim();
+
+    return res.status(200).json({
+      reply: reply || 'No response text was returned.'
+    });
+  } catch (error) {
+    return res.status(500).json({ error: 'Server error' });
+  }
+}
